@@ -72,6 +72,7 @@ configure_file(
   "${CMAKE_CURRENT_BINARY_DIR}/dnscrypt/dnscrypt_config.h")
 
 set(common_src
+  services/authzone.c
   services/cache/dns.c
   services/cache/infra.c
   services/cache/rrset.c
