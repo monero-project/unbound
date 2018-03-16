@@ -10,15 +10,15 @@ sinclude(dnscrypt/dnscrypt.m4)
 
 # must be numbers. ac_defun because of later processing
 m4_define([VERSION_MAJOR],[1])
-m4_define([VERSION_MINOR],[6])
-m4_define([VERSION_MICRO],[4])
+m4_define([VERSION_MINOR],[7])
+m4_define([VERSION_MICRO],[0])
 AC_INIT(unbound, m4_defn([VERSION_MAJOR]).m4_defn([VERSION_MINOR]).m4_defn([VERSION_MICRO]), unbound-bugs@nlnetlabs.nl, unbound)
 AC_SUBST(UNBOUND_VERSION_MAJOR, [VERSION_MAJOR])
 AC_SUBST(UNBOUND_VERSION_MINOR, [VERSION_MINOR])
 AC_SUBST(UNBOUND_VERSION_MICRO, [VERSION_MICRO])
 
 LIBUNBOUND_CURRENT=7
-LIBUNBOUND_REVISION=3
+LIBUNBOUND_REVISION=8
 LIBUNBOUND_AGE=5
 # 1.0.0 had 0:12:0
 # 1.0.1 had 0:13:0
@@ -73,6 +73,11 @@ LIBUNBOUND_AGE=5
 # 1.6.2 had 7:1:5
 # 1.6.3 had 7:2:5
 # 1.6.4 had 7:3:5
+# 1.6.5 had 7:4:5
+# 1.6.6 had 7:5:5
+# 1.6.7 had 7:6:5
+# 1.6.8 had 7:7:5
+# 1.7.0 had 7:8:5
 
 #   Current  -- the number of the binary API that we're implementing
 #   Revision -- which iteration of the implementation of the binary
@@ -88,7 +93,7 @@ LIBUNBOUND_AGE=5
 # Current and Age.  Set Revision to 0, since this is the first
 # implementation of the new API.
 #
-# Otherwise, we're changing the binary API and breaking bakward
+# Otherwise, we're changing the binary API and breaking backward
 # compatibility with old binaries.  Increment Current.  Set Age to 0,
 # since we're backward compatible with no previous APIs.  Set Revision
 # to 0 too.
@@ -242,9 +247,11 @@ AC_DEFINE_UNQUOTED(RSRC_PACKAGE_VERSION, [$wnvs], [version number for resource f
 AC_C_CONST
 AC_LANG_C
 # allow user to override the -g -O2 flags.
+default_cflags=no
 if test "x$CFLAGS" = "x" ; then
 ACX_CHECK_COMPILER_FLAG(g, [CFLAGS="$CFLAGS -g"])
 ACX_CHECK_COMPILER_FLAG(O2, [CFLAGS="$CFLAGS -O2"])
+default_cflags=yes
 fi
 AC_PROG_CC
 ACX_DEPFLAG
@@ -268,9 +275,14 @@ case "$debug_enabled" in
 		# nothing to do.
 		;;
 esac
-ACX_CHECK_FLTO
-ACX_CHECK_PIE
-ACX_CHECK_RELRO_NOW
+if test "$default_cflags" = "yes"; then
+	# only when CFLAGS was "" at the start, if the users wants to
+	# override we shouldn't add default cflags, because they wouldn't
+	# be able to turn off these options and set the CFLAGS wanted.
+	ACX_CHECK_FLTO
+	ACX_CHECK_PIE
+	ACX_CHECK_RELRO_NOW
+fi
 
 AC_C_INLINE
 ACX_CHECK_FORMAT_ATTRIBUTE
@@ -455,7 +467,9 @@ ub_have_pthreads=no
 if test x_$withval != x_no; then
 	AX_PTHREAD([
 		AC_DEFINE(HAVE_PTHREAD,1,[Define if you have POSIX threads libraries and header files.])
-		LIBS="$PTHREAD_LIBS $LIBS"
+		if test -n "$PTHREAD_LIBS"; then
+		  LIBS="$PTHREAD_LIBS $LIBS"
+		fi
 		CFLAGS="$CFLAGS $PTHREAD_CFLAGS"
 		CC="$PTHREAD_CC"
 		ub_have_pthreads=yes
@@ -557,15 +571,28 @@ if test x_$ub_test_python != x_no; then
       AC_SUBST(PY_MAJOR_VERSION)
       # Have Python
       AC_DEFINE(HAVE_PYTHON,1,[Define if you have Python libraries and header files.])
-      LIBS="$PYTHON_LDFLAGS $LIBS"
-      CPPFLAGS="$CPPFLAGS $PYTHON_CPPFLAGS"
+      if test -n "$LIBS"; then
+        LIBS="$PYTHON_LDFLAGS $LIBS"
+      else
+        LIBS="$PYTHON_LDFLAGS"
+      fi
+      if test -n "$CPPFLAGS"; then
+        CPPFLAGS="$CPPFLAGS $PYTHON_CPPFLAGS"
+      else
+        CPPFLAGS="$PYTHON_CPPFLAGS"
+      fi
       ub_have_python=yes
       PC_PY_DEPENDENCY="python"
       AC_SUBST(PC_PY_DEPENDENCY)
 
       # Check for SWIG
       ub_have_swig=no
-      AC_PROG_SWIG(2.0.1)
+      AC_ARG_ENABLE(swig-version-check, AC_HELP_STRING([--disable-swig-version-check], [Disable swig version check to build python modules with older swig even though that is unreliable]))
+      if test "$enable_swig_version_check" = "yes"; then
+      	AC_PROG_SWIG(2.0.1)
+      else
+      	AC_PROG_SWIG
+      fi
       AC_MSG_CHECKING(SWIG)
       if test ! -x "$SWIG"; then
          AC_ERROR([failed to find swig tool, install it, or do not build Python module and PyUnbound])
@@ -697,7 +724,7 @@ AC_CHECK_FUNCS([OPENSSL_config EVP_sha1 EVP_sha256 EVP_sha512 FIPS_mode EVP_MD_C
 # these check_funcs need -lssl
 BAKLIBS="$LIBS"
 LIBS="-lssl $LIBS"
-AC_CHECK_FUNCS([OPENSSL_init_ssl SSL_CTX_set_security_level])
+AC_CHECK_FUNCS([OPENSSL_init_ssl SSL_CTX_set_security_level SSL_set1_host SSL_get0_peername])
 LIBS="$BAKLIBS"
 
 AC_CHECK_DECLS([SSL_COMP_get_compression_methods,sk_SSL_COMP_pop_free,SSL_CTX_set_ecdh_auto], [], [], [
@@ -911,10 +938,34 @@ case "$enable_dsa" in
       ;;
     *)
       # detect if DSA is supported, and turn it off if not.
+      if test $USE_NSS = "no" -a $USE_NETTLE = "no"; then
       AC_CHECK_FUNC(DSA_SIG_new, [
+      AC_CHECK_TYPE(DSA_SIG*, [
       AC_DEFINE_UNQUOTED([USE_DSA], [1], [Define this to enable DSA support.])
       ], [if test "x$enable_dsa" = "xyes"; then AC_MSG_ERROR([OpenSSL does not support DSA and you used --enable-dsa.])
+               fi ], [
+AC_INCLUDES_DEFAULT
+#ifdef HAVE_OPENSSL_ERR_H
+#include <openssl/err.h>
+#endif
+
+#ifdef HAVE_OPENSSL_RAND_H
+#include <openssl/rand.h>
+#endif
+
+#ifdef HAVE_OPENSSL_CONF_H
+#include <openssl/conf.h>
+#endif
+
+#ifdef HAVE_OPENSSL_ENGINE_H
+#include <openssl/engine.h>
+#endif
+      ])
+      ], [if test "x$enable_dsa" = "xyes"; then AC_MSG_ERROR([OpenSSL does not support DSA and you used --enable-dsa.])
                fi ])
+      else
+      AC_DEFINE_UNQUOTED([USE_DSA], [1], [Define this to enable DSA support.])
+      fi
       ;;
 esac
 
@@ -926,12 +977,17 @@ case "$enable_ed25519" in
     *)
       if test $USE_NSS = "no" -a $USE_NETTLE = "no"; then
 	      AC_CHECK_DECLS([NID_ED25519], [
-      		AC_DEFINE_UNQUOTED([USE_ED25519], [1], [Define this to enable ED25519 support.])
       		use_ed25519="yes"
 	      ], [ if test "x$enable_ed25519" = "xyes"; then AC_MSG_ERROR([OpenSSL does not support ED25519 and you used --enable-ed25519.])
 	      	fi ], [AC_INCLUDES_DEFAULT
 #include <openssl/evp.h>
 	      ])
+      fi
+      if test $USE_NETTLE = "yes"; then
+		AC_CHECK_HEADERS([nettle/eddsa.h], use_ed25519="yes",, [AC_INCLUDES_DEFAULT])
+      fi
+      if test $use_ed25519 = "yes"; then
+      		AC_DEFINE_UNQUOTED([USE_ED25519], [1], [Define this to enable ED25519 support.])
       fi
       ;;
 esac
@@ -1105,7 +1161,12 @@ if test x_$enable_static_exe = x_yes; then
 	if test "$on_mingw" = yes; then
 		staticexe="-all-static"
 		# for static compile, include gdi32 and zlib here.
-		LIBS="$LIBS -lgdi32 -lz"
+		if echo $LIBS | grep 'lgdi32' >/dev/null; then
+			:
+		else
+			LIBS="$LIBS -lgdi32"
+		fi
+		LIBS="$LIBS -lz"
 	fi
 fi
 
@@ -1443,11 +1504,25 @@ AC_ARG_WITH(libunbound-only, AC_HELP_STRING([--with-libunbound-only],
 		INSTALLTARGET="install-lib"
 	fi
 ])
+if test $ALLTARGET = "alltargets"; then
+	if test $USE_NSS = "yes"; then 
+		AC_ERROR([--with-nss can only be used in combination with --with-libunbound-only.])	
+	fi
+	if test $USE_NETTLE = "yes"; then
+		AC_ERROR([--with-nettle can only be used in combination with --with-libunbound-only.])	
+	fi
+fi
+
 AC_SUBST(ALLTARGET)
 AC_SUBST(INSTALLTARGET)
 
 ACX_STRIP_EXT_FLAGS
-LDFLAGS="$LATE_LDFLAGS $LDFLAGS"
+if test -n "$LATE_LDFLAGS"; then
+  LDFLAGS="$LATE_LDFLAGS $LDFLAGS"
+fi
+# remove start spaces 
+LDFLAGS=`echo "$LDFLAGS"|sed -e 's/^ *//'`
+LIBS=`echo "$LIBS"|sed -e 's/^ *//'`
 
 AC_DEFINE_UNQUOTED([MAXSYSLOGMSGLEN], [10240], [Define to the maximum message length to pass to syslog.])
 
@@ -1611,6 +1686,7 @@ uint32_t arc4random(void);
 void arc4random_buf(void* buf, size_t n);
 void _ARC4_LOCK(void);
 void _ARC4_UNLOCK(void);
+void _ARC4_LOCK_DESTROY(void);
 #endif
 #ifndef HAVE_ARC4RANDOM_UNIFORM
 uint32_t arc4random_uniform(uint32_t upper_bound);
