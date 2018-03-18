@@ -58,6 +58,7 @@
 #include "services/cache/rrset.h"
 #include "services/cache/infra.h"
 #include "services/cache/dns.h"
+#include "services/authzone.h"
 #include "services/mesh.h"
 #include "services/localzone.h"
 #include "util/data/msgparse.h"
@@ -1009,6 +1010,7 @@ worker_handle_request(struct comm_point* c, void* arg, int error,
 	struct query_info* lookup_qinfo = &qinfo;
 	struct query_info qinfo_tmp; /* placeholdoer for lookup_qinfo */
 	struct respip_client_info* cinfo = NULL, cinfo_tmp;
+	memset(&qinfo, 0, sizeof(qinfo));
 
 	if(error != NETEVENT_NOERROR) {
 		/* some bad tcp query DNS formats give these error calls */
@@ -1045,7 +1047,7 @@ worker_handle_request(struct comm_point* c, void* arg, int error,
 			strcasecmp(buf,
 			worker->daemon->dnscenv->provider_name) == 0)) {
 			verbose(VERB_ALGO,
-				"dnscrypt: not TXT %s. Receive: %s %s",
+				"dnscrypt: not TXT \"%s\". Received: %s \"%s\"",
 				worker->daemon->dnscenv->provider_name,
 				sldns_rr_descript(qinfo.qtype)->_name,
 				buf);
@@ -1111,6 +1113,7 @@ worker_handle_request(struct comm_point* c, void* arg, int error,
 	if(!query_info_parse(&qinfo, c->buffer)) {
 		verbose(VERB_ALGO, "worker parse request: formerror.");
 		log_addr(VERB_CLIENT,"from",&repinfo->addr, repinfo->addrlen);
+		memset(&qinfo, 0, sizeof(qinfo)); /* zero qinfo.qname */
 		if(worker_err_ratelimit(worker, LDNS_RCODE_FORMERR) == -1) {
 			comm_point_drop_reply(repinfo);
 			return 0;
@@ -1249,6 +1252,22 @@ worker_handle_request(struct comm_point* c, void* arg, int error,
 		server_stats_insrcode(&worker->stats, c->buffer);
 		goto send_reply;
 	}
+	if(worker->env.auth_zones &&
+		auth_zones_answer(worker->env.auth_zones, &worker->env,
+		&qinfo, &edns, c->buffer, worker->scratchpad)) {
+		regional_free_all(worker->scratchpad);
+		if(sldns_buffer_limit(c->buffer) == 0) {
+			comm_point_drop_reply(repinfo);
+			return 0;
+		}
+		/* set RA for everyone that can have recursion (based on
+		 * access control list) */
+		if(LDNS_RD_WIRE(sldns_buffer_begin(c->buffer)) &&
+		   acl != acl_deny_non_local && acl != acl_refuse_non_local)
+			LDNS_RA_SET(sldns_buffer_begin(c->buffer));
+		server_stats_insrcode(&worker->stats, c->buffer);
+		goto send_reply;
+	}
 
 	/* We've looked in our local zones. If the answer isn't there, we
 	 * might need to bail out based on ACLs now. */
@@ -1264,13 +1283,9 @@ worker_handle_request(struct comm_point* c, void* arg, int error,
 	 * ACLs allow the snooping. */
 	if(!(LDNS_RD_WIRE(sldns_buffer_begin(c->buffer))) &&
 		acl != acl_allow_snoop ) {
-		sldns_buffer_set_limit(c->buffer, LDNS_HEADER_SIZE);
-		sldns_buffer_write_at(c->buffer, 4, 
-			(uint8_t*)"\0\0\0\0\0\0\0\0", 8);
-		LDNS_QR_SET(sldns_buffer_begin(c->buffer));
-		LDNS_RCODE_SET(sldns_buffer_begin(c->buffer), 
-			LDNS_RCODE_REFUSED);
-		sldns_buffer_flip(c->buffer);
+		error_encode(c->buffer, LDNS_RCODE_REFUSED, &qinfo,
+			*(uint16_t*)(void *)sldns_buffer_begin(c->buffer),
+			sldns_buffer_read_u16_at(c->buffer, 2), NULL);
 		regional_free_all(worker->scratchpad);
 		server_stats_insrcode(&worker->stats, c->buffer);
 		log_addr(VERB_ALGO, "refused nonrec (cache snoop) query from",
@@ -1324,11 +1339,11 @@ lookup_cache:
 		h = query_info_hash(lookup_qinfo, sldns_buffer_read_u16_at(c->buffer, 2));
 		if((e=slabhash_lookup(worker->env.msg_cache, h, lookup_qinfo, 0))) {
 			/* answer from cache - we have acquired a readlock on it */
-			if(answer_from_cache(worker, &qinfo, 
+			if(answer_from_cache(worker, &qinfo,
 				cinfo, &need_drop, &alias_rrset, &partial_rep,
-				(struct reply_info*)e->data, 
-				*(uint16_t*)(void *)sldns_buffer_begin(c->buffer), 
-				sldns_buffer_read_u16_at(c->buffer, 2), repinfo, 
+				(struct reply_info*)e->data,
+				*(uint16_t*)(void *)sldns_buffer_begin(c->buffer),
+				sldns_buffer_read_u16_at(c->buffer, 2), repinfo,
 				&edns)) {
 				/* prefetch it if the prefetch TTL expired.
 				 * Note that if there is more than one pass
@@ -1355,6 +1370,10 @@ lookup_cache:
 					lock_rw_unlock(&e->lock);
 					regional_free_all(worker->scratchpad);
 					goto send_reply;
+				} else {
+					/* Note that we've already released the
+					 * lock if we're here after prefetch. */
+					lock_rw_unlock(&e->lock);
 				}
 				/* We've found a partial reply ending with an
 				 * alias.  Replace the lookup qinfo for the
@@ -1362,7 +1381,6 @@ lookup_cache:
 				 * (possibly) complete the reply.  As we're
 				 * passing the "base" reply, there will be no
 				 * more alias chasing. */
-				lock_rw_unlock(&e->lock);
 				memset(&qinfo_tmp, 0, sizeof(qinfo_tmp));
 				get_cname_target(alias_rrset, &qinfo_tmp.qname,
 					&qinfo_tmp.qname_len);
@@ -1628,7 +1646,8 @@ worker_init(struct worker* worker, struct config_file *cfg,
 		cfg->use_caps_bits_for_id, worker->ports, worker->numports,
 		cfg->unwanted_threshold, cfg->outgoing_tcp_mss,
 		&worker_alloc_cleanup, worker,
-		cfg->do_udp, worker->daemon->connect_sslctx, cfg->delay_close,
+		cfg->do_udp || cfg->udp_upstream_without_downstream,
+		worker->daemon->connect_sslctx, cfg->delay_close,
 		dtenv);
 	if(!worker->back) {
 		log_err("could not create outgoing sockets");
@@ -1666,10 +1685,22 @@ worker_init(struct worker* worker, struct config_file *cfg,
 	if(worker->thread_num == 0)
 		log_set_time(worker->env.now);
 	worker->env.worker = worker;
+	worker->env.worker_base = worker->base;
 	worker->env.send_query = &worker_send_query;
 	worker->env.alloc = &worker->alloc;
+	worker->env.outnet = worker->back;
 	worker->env.rnd = worker->rndstate;
-	worker->env.scratch = worker->scratchpad;
+	/* If case prefetch is triggered, the corresponding mesh will clear
+	 * the scratchpad for the module env in the middle of request handling.
+	 * It would be prone to a use-after-free kind of bug, so we avoid
+	 * sharing it with worker's own scratchpad at the cost of having
+	 * one more pad per worker. */
+	worker->env.scratch = regional_create_custom(cfg->msg_buffer_size);
+	if(!worker->env.scratch) {
+		log_err("malloc failure");
+		worker_delete(worker);
+		return 0;
+	}
 	worker->env.mesh = mesh_create(&worker->daemon->mods, &worker->env);
 	worker->env.detach_subs = &mesh_detach_subs;
 	worker->env.attach_sub = &mesh_attach_sub;
@@ -1706,6 +1737,14 @@ worker_init(struct worker* worker, struct config_file *cfg,
 			/* let timer fire, then it can reset itself */
 			comm_timer_set(worker->env.probe_timer, &tv);
 		}
+	}
+	/* zone transfer tasks, setup once per process, if any */
+	if(worker->env.auth_zones
+#ifndef THREADS_DISABLED
+		&& worker->thread_num == 0
+#endif
+		) {
+		auth_xfer_pickup_initial(worker->env.auth_zones, &worker->env);
 	}
 	if(!worker->env.mesh || !worker->env.scratch_buffer) {
 		worker_delete(worker);
@@ -1758,6 +1797,7 @@ worker_delete(struct worker* worker)
 	comm_base_delete(worker->base);
 	ub_randfree(worker->rndstate);
 	alloc_clear(&worker->alloc);
+	regional_destroy(worker->env.scratch);
 	regional_destroy(worker->scratchpad);
 	free(worker);
 }
