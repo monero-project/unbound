@@ -207,7 +207,7 @@ static void pr_stats(const char* nm, struct ub_stats_info* s)
     PR_UL_NM("num.dnscrypt.cleartext", s->svr.num_query_dnscrypt_cleartext);
     PR_UL_NM("num.dnscrypt.malformed",
              s->svr.num_query_dnscrypt_crypted_malformed);
-#endif
+#endif /* USE_DNSCRYPT */
 	printf("%s.requestlist.avg"SQ"%g\n", nm,
 		(s->svr.num_queries_missed_cache+s->svr.num_queries_prefetch)?
 			(double)s->svr.sum_query_list_size/
@@ -250,6 +250,12 @@ static void print_mem(struct ub_shm_stat_info* shm_stat)
 #endif
 #ifdef USE_IPSECMOD
 	PR_LL("mem.mod.ipsecmod", shm_stat->mem.ipsecmod);
+#endif
+#ifdef USE_DNSCRYPT
+	PR_LL("mem.cache.dnscrypt_shared_secret",
+		shm_stat->mem.dnscrypt_shared_secret);
+	PR_LL("mem.cache.dnscrypt_nonce",
+		shm_stat->mem.dnscrypt_nonce);
 #endif
 }
 
@@ -337,6 +343,8 @@ static void print_extended(struct ub_stats_info* s)
 	if(!inhibit_zero || s->svr.ans_rcode_nodata) {
 		PR_UL("num.answer.rcode.nodata", s->svr.ans_rcode_nodata);
 	}
+	/* iteration */
+	PR_UL("num.query.ratelimited", s->svr.queries_ratelimited);
 	/* validation */
 	PR_UL("num.answer.secure", s->svr.ans_secure);
 	PR_UL("num.answer.bogus", s->svr.ans_bogus);
@@ -349,6 +357,15 @@ static void print_extended(struct ub_stats_info* s)
 	PR_UL("rrset.cache.count", s->svr.rrset_cache_count);
 	PR_UL("infra.cache.count", s->svr.infra_cache_count);
 	PR_UL("key.cache.count", s->svr.key_cache_count);
+#ifdef USE_DNSCRYPT
+	PR_UL("dnscrypt_shared_secret.cache.count",
+			 s->svr.shared_secret_cache_count);
+	PR_UL("num.query.dnscrypt.shared_secret.cachemiss",
+			 s->svr.num_query_dnscrypt_secret_missed_cache);
+	PR_UL("dnscrypt_nonce.cache.count", s->svr.nonce_cache_count);
+	PR_UL("num.query.dnscrypt.replay",
+			 s->svr.num_query_dnscrypt_replay);
+#endif /* USE_DNSCRYPT */
 }
 
 /** print statistics out of memory structures */
@@ -356,7 +373,7 @@ static void do_stats_shm(struct config_file* cfg, struct ub_stats_info* stats,
 	struct ub_shm_stat_info* shm_stat)
 {
 	int i;
-	char nm[16];
+	char nm[32];
 	for(i=0; i<cfg->num_threads; i++) {
 		snprintf(nm, sizeof(nm), "thread%d", i);
 		pr_stats(nm, &stats[i+1]);
@@ -709,7 +726,7 @@ int main(int argc, char* argv[])
 	WSADATA wsa_data;
 #endif
 #ifdef USE_THREAD_DEBUG
-	/* stop the file output from unbound-control, overwites the servers */
+	/* stop the file output from unbound-control, overwrites the servers */
 	extern int check_locking_order;
 	check_locking_order = 0;
 #endif /* USE_THREAD_DEBUG */
@@ -763,7 +780,9 @@ int main(int argc, char* argv[])
 #ifdef HAVE_ERR_LOAD_CRYPTO_STRINGS
 	ERR_load_crypto_strings();
 #endif
+#if OPENSSL_VERSION_NUMBER < 0x10100000 || !defined(HAVE_OPENSSL_INIT_SSL)
 	ERR_load_SSL_strings();
+#endif
 #if OPENSSL_VERSION_NUMBER < 0x10100000 || !defined(HAVE_OPENSSL_INIT_CRYPTO)
 	OpenSSL_add_all_algorithms();
 #else
@@ -774,7 +793,7 @@ int main(int argc, char* argv[])
 #if OPENSSL_VERSION_NUMBER < 0x10100000 || !defined(HAVE_OPENSSL_INIT_SSL)
 	(void)SSL_library_init();
 #else
-	(void)OPENSSL_init_ssl(0, NULL);
+	(void)OPENSSL_init_ssl(OPENSSL_INIT_LOAD_SSL_STRINGS, NULL);
 #endif
 
 	if(!RAND_status()) {

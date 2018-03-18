@@ -255,6 +255,12 @@ int sldns_wire2str_rr_buf(uint8_t* d, size_t dlen, char* s, size_t slen)
 	return sldns_wire2str_rr_scan(&d, &dlen, &s, &slen, NULL, 0);
 }
 
+int sldns_wire2str_rrquestion_buf(uint8_t* d, size_t dlen, char* s, size_t slen)
+{
+	/* use arguments as temporary variables */
+	return sldns_wire2str_rrquestion_scan(&d, &dlen, &s, &slen, NULL, 0);
+}
+
 int sldns_wire2str_rdata_buf(uint8_t* rdata, size_t rdata_len, char* str,
 	size_t str_len, uint16_t rrtype)
 {
@@ -1335,7 +1341,7 @@ int sldns_wire2str_time_scan(uint8_t** d, size_t* dl, char** s, size_t* sl)
 	if(*dl < 4) return -1;
 	t = sldns_read_uint32(*d);
 	date_buf[15]=0;
-	if(sldns_serial_arithmitics_gmtime_r(t, time(NULL), &tm) &&
+	if(sldns_serial_arithmetics_gmtime_r(t, time(NULL), &tm) &&
 		strftime(date_buf, 15, "%Y%m%d%H%M%S", &tm)) {
 		(*d) += 4;
 		(*dl) -= 4;
@@ -1471,6 +1477,10 @@ int sldns_wire2str_wks_scan(uint8_t** d, size_t* dl, char** s, size_t* sl)
 	if(protocol && (protocol->p_name != NULL)) {
 		w += sldns_str_print(s, sl, "%s", protocol->p_name);
 		proto_name = protocol->p_name;
+	} else if(protocol_nr == 6) {
+		w += sldns_str_print(s, sl, "tcp");
+	} else if(protocol_nr == 17) {
+		w += sldns_str_print(s, sl, "udp");
 	} else	{
 		w += sldns_str_print(s, sl, "%u", (unsigned)protocol_nr);
 	}

@@ -37,7 +37,7 @@
  * \file
  *
  * This file contains functions to resolve DNS queries and 
- * validate the answers. Synchonously and asynchronously.
+ * validate the answers. Synchronously and asynchronously.
  *
  * Several ways to use this interface from an application wishing
  * to perform (validated) DNS lookups.
@@ -177,7 +177,7 @@ struct ub_result {
 	 * False, if validation failed or domain queried has no security info.
 	 *
 	 * It is possible to get a result with no data (havedata is false),
-	 * and secure is true. This means that the non-existance of the data
+	 * and secure is true. This means that the non-existence of the data
 	 * was cryptographically proven (with signatures).
 	 */
 	int secure;
@@ -622,6 +622,8 @@ struct ub_shm_stat_info {
 		long long subnet;
 		long long ipsecmod;
 		long long respip;
+		long long dnscrypt_shared_secret;
+		long long dnscrypt_nonce;
 	} mem;
 };
 
@@ -704,6 +706,8 @@ struct ub_server_stats {
 	long long ans_bogus;
 	/** rrsets marked bogus by validator */
 	long long rrset_bogus;
+	/** number of queries that have been ratelimited by domain recursion. */
+	long long queries_ratelimited;
 	/** unwanted traffic received on server-facing ports */
 	long long unwanted_replies;
 	/** unwanted traffic received on client-facing ports */
@@ -735,11 +739,19 @@ struct ub_server_stats {
 	long long num_query_dnscrypt_cleartext;
 	/** number of malformed encrypted queries */
 	long long num_query_dnscrypt_crypted_malformed;
+	/** number of queries which did not have a shared secret in cache */
+	long long num_query_dnscrypt_secret_missed_cache;
+	/** number of dnscrypt shared secret cache entries */
+	long long shared_secret_cache_count;
+	/** number of queries which are replays */
+	long long num_query_dnscrypt_replay;
+	/** number of dnscrypt nonces cache entries */
+	long long nonce_cache_count;
 };
 
 /** 
  * Statistics to send over the control pipe when asked
- * This struct is made to be memcpied, sent in binary.
+ * This struct is made to be memcopied, sent in binary.
  * shm mapped with (number+1) at num_threads+1, with first as total
  */
 struct ub_stats_info {
