@@ -231,3 +231,7 @@ if (INSTALL_VENDORED_LIBUNBOUND)
     install(TARGETS unbound
         ARCHIVE DESTINATION ${lib_folder})
 endif()
+
+if (BACKCOMPAT)
+    add_definitions(-DBACK_COMPAT)
+endif()

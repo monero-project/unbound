@@ -52,6 +52,12 @@
 #include "sldns/sbuffer.h"
 #include "sldns/rrdef.h"
 #include "sldns/str2wire.h"
+
+#ifdef BACK_COMPAT
+#undef HAVE_GLOB
+#undef HAVE_GLOB_H
+#endif
+
 #ifdef HAVE_GLOB_H
 #include <glob.h>
 #endif
